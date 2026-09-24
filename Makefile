@@ -16,7 +16,7 @@ test:
 	pytest -v
 
 lint:
-	ruff check .
+	python -m ruff check .
 
 demo-crash:
 	python scripts/demo_crash.py
