@@ -112,6 +112,7 @@ async def _reclaim_tasks_from_dead_worker(
                     settings.redis_consumer_group,
                     message_id,
                 )
+                await redis.xdel(settings.redis_stream_name, message_id)
 
             # If new_start_id is "0-0", we've consumed everything
             if new_start_id == "0-0" or new_start_id == start_id:

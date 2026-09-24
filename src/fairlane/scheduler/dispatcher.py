@@ -109,7 +109,7 @@ async def _dispatch_cycle(redis, dispatch_sha: str) -> None:
 async def _record_dispatch_events(task_ids: list[bytes]) -> None:
     """Batch write DISPATCHED events for the dispatched tasks."""
     now = datetime.now(UTC)
-    task_id_strs = [t.decode("utf-8") for t in task_ids]
+    task_id_strs = [t.decode("utf-8") if isinstance(t, bytes) else t for t in task_ids]
     
     events_to_insert = []
     

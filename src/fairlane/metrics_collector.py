@@ -17,6 +17,7 @@ from fairlane.metrics import (
     TENANT_TOKENS,
     TENANT_VIRTUAL_TIME,
 )
+from fairlane.models import WorkerStatus
 
 COLLECTOR_LOCK_KEY = "fairlane:metrics_collector_lock"
 LOCK_EXPIRY = 5  # seconds
@@ -72,8 +73,8 @@ async def collect_metrics(redis: Redis):
                 QUEUE_WAITING.labels(tenant=t).set(c)
 
             # 2. DB: Workers
-            active = await db.execute(select(func.count(Worker.id)).where(Worker.status == "ACTIVE"))
-            dead = await db.execute(select(func.count(Worker.id)).where(Worker.status == "DEAD"))
+            active = await db.execute(select(func.count(Worker.worker_id)).where(Worker.status == WorkerStatus.ACTIVE))
+            dead = await db.execute(select(func.count(Worker.worker_id)).where(Worker.status == WorkerStatus.DEAD))
             WORKERS_ACTIVE.set(active.scalar_one_or_none() or 0)
             WORKERS_DEAD.set(dead.scalar_one_or_none() or 0)
 

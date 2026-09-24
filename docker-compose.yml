@@ -98,7 +98,7 @@ services:
       - worker
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.0.3
     container_name: fairlane_grafana
     restart: unless-stopped
     ports:
