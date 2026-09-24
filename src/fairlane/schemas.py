@@ -13,6 +13,16 @@ class TaskCreate(BaseModel):
     # TODO: Implement idempotency key
 
 
+class TaskEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    task_id: uuid.UUID
+    event_type: str
+    details: dict[str, Any]
+    created_at: datetime
+
+
 class TaskResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

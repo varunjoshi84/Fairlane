@@ -102,7 +102,7 @@ async def run_scheduler(stop_event: asyncio.Event) -> None:
             await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SECONDS)
             # If we reach here, stop_event was set – exit the loop.
             break
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Normal timeout – loop around and poll again.
             pass
 
