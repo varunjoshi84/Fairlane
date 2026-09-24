@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     postgres_password: str = "fairlane_secret"
     postgres_db: str = "fairlane"
     postgres_host: str = "localhost"
-    postgres_port: int = 5432
+    postgres_port: int = 5433
     database_url_override: Optional[str] = None
 
     # Redis Configuration
