@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import random
 import signal
 import socket
 import uuid
@@ -64,15 +65,15 @@ class FairlaneWorker:
                 raise
 
     async def process_task(self, message_id: str, data: dict[str, Any]) -> None:
-        """Execute task lifecycle: RUNNING -> Work -> SUCCEEDED -> XACK."""
+        """Execute task lifecycle: RUNNING -> Work -> SUCCEEDED / FAILED -> XACK."""
         task_id_str = data.get("task_id")
         if not task_id_str:
             logger.warning(
                 f"Malformed message without task_id: {data}. Acknowledging.",
                 extra={"worker_id": self.worker_id},
             )
-            assert self.redis is not None
-            await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
+            if self.redis is not None:
+                await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
             return
 
         try:
@@ -82,8 +83,8 @@ class FairlaneWorker:
                 f"Invalid UUID in task message: {task_id_str}. Acknowledging.",
                 extra={"worker_id": self.worker_id},
             )
-            assert self.redis is not None
-            await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
+            if self.redis is not None:
+                await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
             return
 
         async with async_session_factory() as db:
@@ -96,8 +97,8 @@ class FairlaneWorker:
                     f"Task {task_id_str} not found in database. Acknowledging message.",
                     extra={"worker_id": self.worker_id, "task_id": task_id_str},
                 )
-                assert self.redis is not None
-                await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
+                if self.redis is not None:
+                    await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
                 return
 
             log_context = {
@@ -133,6 +134,27 @@ class FairlaneWorker:
                 # TODO: Heartbeat mechanism (send periodic heartbeats while task is running)
                 # TODO: Priority-aware task execution
 
+                # --- Failure-injection hooks for testing ---
+                payload = task.payload or {}
+
+                # 1. Always fail if {"fail": true}
+                if payload.get("fail") is True:
+                    raise RuntimeError("Injected failure: payload 'fail' is True")
+
+                # 2. Random failure based on probability {"fail_rate": 0.5}
+                if "fail_rate" in payload:
+                    fail_rate = float(payload["fail_rate"])
+                    if random.random() < fail_rate:
+                        raise RuntimeError(f"Injected failure: triggered by fail_rate={fail_rate}")
+
+                # 3. Fail until specific attempt threshold reached {"fail_until_attempt": 3}
+                if "fail_until_attempt" in payload:
+                    fail_until = int(payload["fail_until_attempt"])
+                    if task.attempts < fail_until:
+                        raise RuntimeError(
+                            f"Injected failure: current attempt {task.attempts} < fail_until_attempt {fail_until}"
+                        )
+
                 # 3. Simulate work with a short sleep
                 await asyncio.sleep(0.5)
 
@@ -153,12 +175,12 @@ class FairlaneWorker:
                 await db.commit()
 
                 # 5. Acknowledge message in Redis Stream
-                assert self.redis is not None
-                await self.redis.xack(
-                    settings.redis_stream_name,
-                    settings.redis_consumer_group,
-                    message_id,
-                )
+                if self.redis is not None:
+                    await self.redis.xack(
+                        settings.redis_stream_name,
+                        settings.redis_consumer_group,
+                        message_id,
+                    )
 
                 logger.info(
                     f"Task {task.id} finished SUCCEEDED",
@@ -168,26 +190,42 @@ class FairlaneWorker:
             except Exception as e:
                 await db.rollback()
                 logger.error(
-                    f"Error processing task {task.id}: {e}",
-                    exc_info=True,
+                    f"Error processing task {task_uuid}: {e}",
                     extra=log_context,
                 )
+
                 # TODO: Implement retry logic with exponential backoff & jitter
                 # TODO: Route to Dead Letter Queue (DLQ) if task.attempts >= task.max_attempts
-                # Mark as FAILED for now if unhandled
+
+                # Record FAILED in Postgres, set last_error, record audit event, and XACK
                 try:
-                    task.status = TaskStatus.FAILED
-                    task.last_error = str(e)
-                    task.finished_at = datetime.now(UTC)
-                    failed_event = TaskEvent(
-                        task_id=task.id,
-                        event_type="FAILED",
-                        details={"error": str(e), "worker_id": self.worker_id},
-                    )
-                    db.add(failed_event)
-                    await db.commit()
+                    result = await db.execute(select(Task).where(Task.id == task_uuid))
+                    failed_task = result.scalar_one_or_none()
+                    if failed_task:
+                        failed_task.status = TaskStatus.FAILED
+                        failed_task.last_error = str(e)
+                        failed_task.finished_at = datetime.now(UTC)
+                        failed_event = TaskEvent(
+                            task_id=failed_task.id,
+                            event_type="FAILED",
+                            details={
+                                "error": str(e),
+                                "worker_id": self.worker_id,
+                                "attempt": failed_task.attempts,
+                            },
+                        )
+                        db.add(failed_event)
+                        await db.commit()
                 except Exception as db_err:
                     logger.error(f"Failed to record FAILED status in DB: {db_err}", extra=log_context)
+
+                # XACK the message on failure
+                if self.redis is not None:
+                    await self.redis.xack(
+                        settings.redis_stream_name,
+                        settings.redis_consumer_group,
+                        message_id,
+                    )
 
     async def run(self) -> None:
         """Main worker loop."""
