@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from fairlane.db import get_db, check_db_health
-from fairlane.redis_client import check_redis_health, push_task_to_stream
-from fairlane.models import Task, TaskEvent, TaskStatus
-from fairlane.schemas import TaskCreate, TaskResponse
-import uuid
 import logging
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from fairlane.db import check_db_health, get_db
+from fairlane.models import Task, TaskEvent, TaskStatus
+from fairlane.redis_client import check_redis_health, push_task_to_stream
+from fairlane.schemas import TaskCreate, TaskResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

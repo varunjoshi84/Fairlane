@@ -2,8 +2,8 @@
 
 import enum
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
     DateTime,
@@ -23,7 +23,7 @@ class Base(DeclarativeBase):
     pass
 
 
-class TaskStatus(str, enum.Enum):
+class TaskStatus(enum.StrEnum):
     """Lifecycle states of a task in the Fairlane engine."""
 
     PENDING = "PENDING"
@@ -45,7 +45,7 @@ class Task(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     task_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    payload: Mapped[Dict[str, Any]] = mapped_column(
+    payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,
         default=dict,
@@ -62,7 +62,7 @@ class Task(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     # TODO: Implement retry backoff and Dead Letter Queue (DLQ) routing when attempts >= max_attempts
-    idempotency_key: Mapped[Optional[str]] = mapped_column(
+    idempotency_key: Mapped[str | None] = mapped_column(
         String(255),
         unique=True,
         nullable=True,
@@ -70,26 +70,26 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
-    started_at: Mapped[Optional[datetime]] = mapped_column(
+    started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
-    finished_at: Mapped[Optional[datetime]] = mapped_column(
+    finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
-    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
-    events: Mapped[List["TaskEvent"]] = relationship(
+    events: Mapped[list["TaskEvent"]] = relationship(
         "TaskEvent",
         back_populates="task",
         cascade="all, delete-orphan",
@@ -119,7 +119,7 @@ class TaskEvent(Base):
         index=True,
     )
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    details: Mapped[Dict[str, Any]] = mapped_column(
+    details: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,
         default=dict,
@@ -127,7 +127,7 @@ class TaskEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
     # Relationships

@@ -10,19 +10,19 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from fairlane.config import settings
 from fairlane.models import Base
 
 logger = logging.getLogger(__name__)
 
-# Create asynchronous SQLAlchemy engine
+# Create asynchronous SQLAlchemy engine with NullPool to support multiple async event loops (e.g. in tests)
 engine: AsyncEngine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    poolclass=NullPool,
 )
 
 # Asynchronous session factory
@@ -48,7 +48,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create tables directly if they do not exist (useful for quick startup/dev)."""
+    """Create tables directly if they do not exist."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

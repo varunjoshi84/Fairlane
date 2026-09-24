@@ -1,7 +1,6 @@
 """Application configuration using Pydantic Settings."""
 
 from functools import lru_cache
-from typing import Optional
 
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,14 +30,14 @@ class Settings(BaseSettings):
     postgres_db: str = "fairlane"
     postgres_host: str = "localhost"
     postgres_port: int = 5433
-    database_url_override: Optional[str] = None
+    database_url_override: str | None = None
 
     # Redis Configuration
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
-    redis_password: Optional[str] = None
-    redis_url_override: Optional[str] = None
+    redis_password: str | None = None
+    redis_url_override: str | None = None
 
     # Redis Streams Configuration
     redis_stream_name: str = "tasks:stream"
