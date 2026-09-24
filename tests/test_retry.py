@@ -2,7 +2,13 @@
 
 import pytest
 
-from fairlane.retry import calculate_backoff, is_retryable
+from fairlane.models import FailureCategory
+from fairlane.retry import (
+    POISON_PILL_THRESHOLD,
+    calculate_backoff,
+    classify_failure,
+    is_retryable,
+)
 
 # ---------------------------------------------------------------------------
 # calculate_backoff – deterministic (no jitter)
@@ -104,3 +110,125 @@ class TestIsRetryable:
     )
     def test_transient_errors_are_retryable(self, exc):
         assert is_retryable(exc) is True
+
+
+# ---------------------------------------------------------------------------
+# classify_failure
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyFailure:
+    """classify_failure maps (exception, attempts, max_attempts) to FailureCategory."""
+
+    # -- PERMANENT ----------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ValueError("bad input"),
+            KeyError("missing field"),
+            TypeError("wrong type"),
+            AttributeError("no attr"),
+            NotImplementedError(),
+            PermissionError("denied"),
+        ],
+    )
+    def test_permanent_errors(self, exc):
+        """Non-retryable exceptions → PERMANENT regardless of attempt count."""
+        result = classify_failure(exc, attempts=1, max_attempts=5)
+        assert result is FailureCategory.PERMANENT
+
+    def test_permanent_even_if_retries_remain(self):
+        """PERMANENT takes precedence over remaining retries."""
+        result = classify_failure(ValueError("bad"), attempts=1, max_attempts=10)
+        assert result is FailureCategory.PERMANENT
+
+    def test_permanent_even_if_retries_exhausted(self):
+        """PERMANENT takes precedence over exhausted retries."""
+        result = classify_failure(ValueError("bad"), attempts=5, max_attempts=5)
+        assert result is FailureCategory.PERMANENT
+
+    # -- TRANSIENT_EXHAUSTED ------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            TimeoutError("timed out"),
+            ConnectionError("refused"),
+            ConnectionResetError("reset"),
+            OSError("network down"),
+            RuntimeError("transient glitch"),
+        ],
+    )
+    def test_transient_exhausted(self, exc):
+        """Retryable exceptions with attempts >= max_attempts → TRANSIENT_EXHAUSTED."""
+        result = classify_failure(exc, attempts=5, max_attempts=5)
+        assert result is FailureCategory.TRANSIENT_EXHAUSTED
+
+    def test_transient_exhausted_over_max(self):
+        """Attempts exceeding max still yields TRANSIENT_EXHAUSTED."""
+        result = classify_failure(TimeoutError("t"), attempts=7, max_attempts=5)
+        assert result is FailureCategory.TRANSIENT_EXHAUSTED
+
+    # -- TRANSIENT (retries remaining) --------------------------------------
+
+    def test_transient_with_retries_remaining(self):
+        """Retryable exception with retries left → TRANSIENT_EXHAUSTED (conservative).
+
+        In practice the caller schedules a retry rather than dead-lettering.
+        """
+        result = classify_failure(TimeoutError("t"), attempts=2, max_attempts=5)
+        assert result is FailureCategory.TRANSIENT_EXHAUSTED
+
+    # -- POISON_PILL --------------------------------------------------------
+
+    def test_poison_pill_at_threshold(self):
+        """consecutive_crashes == POISON_PILL_THRESHOLD → POISON_PILL."""
+        result = classify_failure(
+            RuntimeError("crash"),
+            attempts=1,
+            max_attempts=5,
+            consecutive_crashes=POISON_PILL_THRESHOLD,
+        )
+        assert result is FailureCategory.POISON_PILL
+
+    def test_poison_pill_above_threshold(self):
+        """consecutive_crashes > POISON_PILL_THRESHOLD → POISON_PILL."""
+        result = classify_failure(
+            RuntimeError("crash"),
+            attempts=1,
+            max_attempts=5,
+            consecutive_crashes=POISON_PILL_THRESHOLD + 5,
+        )
+        assert result is FailureCategory.POISON_PILL
+
+    def test_poison_pill_overrides_permanent(self):
+        """POISON_PILL takes priority over PERMANENT classification."""
+        result = classify_failure(
+            ValueError("bad"),
+            attempts=1,
+            max_attempts=5,
+            consecutive_crashes=POISON_PILL_THRESHOLD,
+        )
+        assert result is FailureCategory.POISON_PILL
+
+    def test_poison_pill_overrides_transient_exhausted(self):
+        """POISON_PILL takes priority over TRANSIENT_EXHAUSTED."""
+        result = classify_failure(
+            TimeoutError("t"),
+            attempts=5,
+            max_attempts=5,
+            consecutive_crashes=POISON_PILL_THRESHOLD,
+        )
+        assert result is FailureCategory.POISON_PILL
+
+    def test_below_poison_pill_threshold_not_poison(self):
+        """consecutive_crashes below threshold does not trigger POISON_PILL."""
+        result = classify_failure(
+            RuntimeError("crash"),
+            attempts=5,
+            max_attempts=5,
+            consecutive_crashes=POISON_PILL_THRESHOLD - 1,
+        )
+        assert result is not FailureCategory.POISON_PILL
+

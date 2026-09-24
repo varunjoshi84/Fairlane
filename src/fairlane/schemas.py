@@ -41,3 +41,101 @@ class TaskResponse(BaseModel):
     finished_at: datetime | None = None
     next_retry_at: datetime | None = None
     last_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Dead-Letter Queue (DLQ) schemas
+# ---------------------------------------------------------------------------
+
+
+class DeadLetterResponse(BaseModel):
+    """Summary representation of a dead-lettered task (used in list views)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    task_id: uuid.UUID
+    tenant_id: str
+    task_type: str
+    failure_category: str
+    last_error: str | None = None
+    attempts_made: int
+    dead_at: datetime
+    replayed_at: datetime | None = None
+    replay_count: int
+
+
+class DeadLetterDetailResponse(DeadLetterResponse):
+    """Full representation including error history."""
+
+    error_history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DeadLetterListResponse(BaseModel):
+    """Paginated list of dead-lettered tasks."""
+
+    items: list[DeadLetterResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class CategoryStat(BaseModel):
+    """Count of dead letters for a single failure category."""
+
+    category: str
+    count: int
+
+
+class TenantStat(BaseModel):
+    """Count of dead letters for a single tenant."""
+
+    tenant_id: str
+    count: int
+
+
+class DeadLetterStatsResponse(BaseModel):
+    """Aggregated DLQ statistics."""
+
+    total: int
+    by_category: list[CategoryStat]
+    by_tenant: list[TenantStat]
+
+
+# ---------------------------------------------------------------------------
+# Replay schemas
+# ---------------------------------------------------------------------------
+
+
+class ReplayRequest(BaseModel):
+    """Optional body for replaying a single dead-lettered task."""
+
+    payload_patch: dict[str, Any] | None = Field(
+        None, description="Merge-patch applied to the task payload before replay"
+    )
+    reset_attempts: bool = Field(
+        False, description="If true, reset attempts to 0"
+    )
+
+
+class BulkReplayRequest(BaseModel):
+    """Criteria for bulk-replaying dead-lettered tasks."""
+
+    tenant_id: str | None = Field(None, description="Filter by tenant")
+    failure_category: str | None = Field(None, description="Filter by failure category")
+
+
+class ReplayResponse(BaseModel):
+    """Response after replaying a single task."""
+
+    task_id: str
+    status: str
+    message: str
+
+
+class BulkReplayResponse(BaseModel):
+    """Response after bulk-replaying tasks."""
+
+    replayed: int
+    task_ids: list[str]
+
+

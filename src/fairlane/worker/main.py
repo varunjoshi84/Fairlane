@@ -19,8 +19,8 @@ from sqlalchemy import select
 from fairlane.config import settings
 from fairlane.db import async_session_factory
 from fairlane.logging_setup import setup_logging
-from fairlane.models import Task, TaskEvent, TaskStatus
-from fairlane.retry import calculate_backoff, is_retryable
+from fairlane.models import DeadLetter, FailureCategory, Task, TaskEvent, TaskStatus
+from fairlane.retry import calculate_backoff, classify_failure, is_retryable
 from fairlane.scheduler import run_scheduler
 
 logger = logging.getLogger("fairlane.worker")
@@ -159,6 +159,17 @@ class FairlaneWorker:
                             f"Injected failure: current attempt {task.attempts} < fail_until_attempt {fail_until}"
                         )
 
+                # 4. Typed failure injection {"fail_type": "permanent"|"transient"}
+                fail_type = payload.get("fail_type")
+                if fail_type == "permanent":
+                    raise ValueError(
+                        "Injected permanent failure: payload 'fail_type' is 'permanent'"
+                    )
+                if fail_type == "transient":
+                    raise TimeoutError(
+                        "Injected transient failure: payload 'fail_type' is 'transient'"
+                    )
+
                 # 3. Simulate work with a short sleep
                 await asyncio.sleep(0.5)
 
@@ -200,8 +211,24 @@ class FairlaneWorker:
                     result = await db.execute(select(Task).where(Task.id == task_uuid))
                     failed_task = result.scalar_one_or_none()
                     if failed_task:
+                        # Build cumulative error history from task_events.
+                        error_entry = {
+                            "attempt": failed_task.attempts,
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "worker_id": self.worker_id,
+                        }
+
+                        # Classify the failure.
+                        category = classify_failure(
+                            e,
+                            attempts=failed_task.attempts,
+                            max_attempts=failed_task.max_attempts,
+                        )
+
                         if retryable and failed_task.attempts < failed_task.max_attempts:
-                            # Calculate exponential backoff delay with jitter
+                            # --- Transient error with retries remaining: schedule retry ---
                             delay_seconds = calculate_backoff(failed_task.attempts)
                             next_retry_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
 
@@ -237,32 +264,75 @@ class FairlaneWorker:
                                 },
                             )
                         else:
-                            # Permanent failure or max attempts exhausted
-                            failed_task.status = TaskStatus.FAILED
-                            failed_task.finished_at = datetime.now(UTC)
+                            # --- Terminal failure: move to DLQ ---
+                            # For permanent errors, category is PERMANENT.
+                            # For transient errors with exhausted retries, category is TRANSIENT_EXHAUSTED.
+                            if not retryable:
+                                category = FailureCategory.PERMANENT
+                            else:
+                                category = FailureCategory.TRANSIENT_EXHAUSTED
+
+                            # Collect error history from all previous RETRY_SCHEDULED
+                            # and RUNNING events for this task.
+                            error_history = []
+                            for evt in (failed_task.events or []):
+                                if evt.event_type in ("RETRY_SCHEDULED", "FAILED") and evt.details.get("error"):
+                                    error_history.append({
+                                        "attempt": evt.details.get("attempt"),
+                                        "error": evt.details.get("error"),
+                                        "timestamp": evt.created_at.isoformat() if evt.created_at else None,
+                                    })
+                            # Append the current (final) error.
+                            error_history.append(error_entry)
+
+                            now = datetime.now(UTC)
+
+                            # 1. Set task status to DEAD
+                            failed_task.status = TaskStatus.DEAD
+                            failed_task.finished_at = now
                             failed_task.next_retry_at = None
                             failed_task.last_error = str(e)
 
-                            failed_event = TaskEvent(
+                            # 2. Insert dead_letters row
+                            dead_letter = DeadLetter(
                                 task_id=failed_task.id,
-                                event_type="FAILED",
+                                tenant_id=failed_task.tenant_id,
+                                task_type=failed_task.task_type,
+                                failure_category=category,
+                                last_error=str(e),
+                                error_history=error_history,
+                                attempts_made=failed_task.attempts,
+                                dead_at=now,
+                            )
+                            db.add(dead_letter)
+
+                            # 3. Add DEAD_LETTERED event
+                            dead_event = TaskEvent(
+                                task_id=failed_task.id,
+                                event_type="DEAD_LETTERED",
                                 details={
                                     "error": str(e),
+                                    "error_type": type(e).__name__,
                                     "worker_id": self.worker_id,
                                     "attempt": failed_task.attempts,
                                     "max_attempts": failed_task.max_attempts,
+                                    "failure_category": category.value,
                                     "retryable": retryable,
                                 },
                             )
-                            db.add(failed_event)
+                            db.add(dead_event)
+
+                            # Commit all three changes in one transaction.
                             await db.commit()
 
                             logger.error(
-                                f"Task {failed_task.id} failed permanently (attempt {failed_task.attempts}/{failed_task.max_attempts}, retryable: {retryable}): {e}",
+                                f"Task {failed_task.id} dead-lettered as {category.value} "
+                                f"(attempt {failed_task.attempts}/{failed_task.max_attempts}): {e}",
                                 extra={
                                     **log_context,
                                     "attempt": failed_task.attempts,
                                     "max_attempts": failed_task.max_attempts,
+                                    "failure_category": category.value,
                                     "retryable": retryable,
                                 },
                             )

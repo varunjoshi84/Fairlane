@@ -100,6 +100,12 @@ class Task(Base):
         cascade="all, delete-orphan",
         order_by="TaskEvent.created_at.asc()",
     )
+    dead_letter: Mapped["DeadLetter | None"] = relationship(
+        "DeadLetter",
+        back_populates="task",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_tasks_tenant_status", "tenant_id", "status"),
@@ -138,3 +144,60 @@ class TaskEvent(Base):
 
     # Relationships
     task: Mapped["Task"] = relationship("Task", back_populates="events")
+
+
+class FailureCategory(enum.StrEnum):
+    """Classification of why a task ended up in the dead-letter queue."""
+
+    TRANSIENT_EXHAUSTED = "TRANSIENT_EXHAUSTED"
+    PERMANENT = "PERMANENT"
+    POISON_PILL = "POISON_PILL"
+
+
+class DeadLetter(Base):
+    """Dead-letter queue entry for tasks that have permanently failed."""
+
+    __tablename__ = "dead_letters"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    task_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    failure_category: Mapped[FailureCategory] = mapped_column(
+        Enum(FailureCategory, name="failure_category_enum", native_enum=True),
+        nullable=False,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_history: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    attempts_made: Mapped[int] = mapped_column(Integer, nullable=False)
+    dead_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    replayed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    replay_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Relationships
+    task: Mapped["Task"] = relationship("Task", back_populates="dead_letter")
+
+    __table_args__ = (
+        Index("ix_dead_letters_tenant_id", "tenant_id"),
+        Index("ix_dead_letters_failure_category", "failure_category"),
+    )
