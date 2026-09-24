@@ -98,7 +98,6 @@ class FairlaneWorker:
             )
             if self.redis is not None:
                 await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
-                            await self.redis.xdel(settings.redis_stream_name, message_id)
                 await self.redis.xdel(settings.redis_stream_name, message_id)
             return
 
@@ -111,7 +110,6 @@ class FairlaneWorker:
             )
             if self.redis is not None:
                 await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
-                            await self.redis.xdel(settings.redis_stream_name, message_id)
                 await self.redis.xdel(settings.redis_stream_name, message_id)
             return
 
@@ -127,8 +125,7 @@ class FairlaneWorker:
                 )
                 if self.redis is not None:
                     await self.redis.xack(settings.redis_stream_name, settings.redis_consumer_group, message_id)
-                            await self.redis.xdel(settings.redis_stream_name, message_id)
-                await self.redis.xdel(settings.redis_stream_name, message_id)
+                    await self.redis.xdel(settings.redis_stream_name, message_id)
                 return
 
             log_context = {
@@ -183,6 +180,7 @@ class FairlaneWorker:
                                 message_id,
                             )
                             await self.redis.xdel(settings.redis_stream_name, message_id)
+
                         inc_tasks_throttled(task.tenant_id)
                         return
                 # 2. Mark Task as RUNNING in Postgres
@@ -302,7 +300,8 @@ class FairlaneWorker:
                             settings.redis_consumer_group,
                             message_id,
                         )
-                            await self.redis.xdel(settings.redis_stream_name, message_id)
+                        await self.redis.xdel(settings.redis_stream_name, message_id)
+
                     self.current_task_id = None
                     return
 
@@ -324,7 +323,8 @@ class FairlaneWorker:
                         settings.redis_consumer_group,
                         message_id,
                     )
-                            await self.redis.xdel(settings.redis_stream_name, message_id)
+                    await self.redis.xdel(settings.redis_stream_name, message_id)
+
 
                 logger.info(
                     f"Task {task.id} finished SUCCEEDED",
@@ -496,7 +496,8 @@ class FairlaneWorker:
                         settings.redis_consumer_group,
                         message_id,
                     )
-                            await self.redis.xdel(settings.redis_stream_name, message_id)
+                    await self.redis.xdel(settings.redis_stream_name, message_id)
+
 
             finally:
                 if self.redis is not None and slot_acquired:

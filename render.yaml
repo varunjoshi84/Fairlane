@@ -1,0 +1,78 @@
+services:
+  - type: web
+    name: fairlane-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: "uvicorn fairlane.api.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: POSTGRES_USER
+        value: fairlane
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+      - key: POSTGRES_DB
+        value: fairlane
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: fairlane-postgres
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: fairlane-postgres
+          property: port
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: fairlane-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: fairlane-redis
+          property: port
+    autoDeploy: false
+
+  - type: worker
+    name: fairlane-worker
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: "python -m fairlane.worker.main"
+    envVars:
+      - key: POSTGRES_USER
+        value: fairlane
+      - key: POSTGRES_PASSWORD
+        fromService:
+          type: web
+          name: fairlane-api
+          envVarKey: POSTGRES_PASSWORD
+      - key: POSTGRES_DB
+        value: fairlane
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: fairlane-postgres
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: fairlane-postgres
+          property: port
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: fairlane-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: fairlane-redis
+          property: port
+    autoDeploy: false
+
+databases:
+  - name: fairlane-postgres
+    databaseName: fairlane
+    user: fairlane
+    plan: starter
+
+  - name: fairlane-redis
+    type: redis
+    plan: starter
+    ipAllowList: [] # internal connections only

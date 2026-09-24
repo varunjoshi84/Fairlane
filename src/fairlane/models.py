@@ -98,7 +98,6 @@ class Task(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
-        index=True,
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -188,7 +187,7 @@ class DeadLetter(Base):
         nullable=False,
         unique=True,
     )
-    tenant_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(255), nullable=False)
     task_type: Mapped[str] = mapped_column(String(255), nullable=False)
     failure_category: Mapped[FailureCategory] = mapped_column(
         Enum(FailureCategory, name="failure_category_enum", native_enum=True),
