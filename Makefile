@@ -20,3 +20,6 @@ lint:
 
 demo-crash:
 	python scripts/demo_crash.py
+
+demo-fairness:
+	python scripts/demo_fairness.py

@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: int = 3
     heartbeat_ttl_seconds: int = 10
 
+    # Rate Limiting Defaults
+    default_rate_per_second: float = 5.0
+    default_burst: int = 10
+    default_max_concurrent: int = 5
+    max_pending_per_tenant: int = 200
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:

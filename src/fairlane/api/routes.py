@@ -2,9 +2,10 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fairlane.config import settings
 from fairlane.db import check_db_health, get_db
 from fairlane.models import Task, TaskEvent, TaskStatus, Worker
 from fairlane.redis_client import check_redis_health, push_task_to_stream
@@ -41,6 +42,19 @@ async def create_task(task_data: TaskCreate, db: AsyncSession = Depends(get_db))
             existing_task = result.scalar_one_or_none()
             if existing_task:
                 return {"task_id": str(existing_task.id)}
+
+        # 0. Check submission quota
+        result = await db.execute(
+            select(func.count(Task.id))
+            .where(Task.tenant_id == task_data.tenant_id, Task.status == TaskStatus.PENDING)
+        )
+        pending_count = result.scalar() or 0
+        if pending_count >= settings.max_pending_per_tenant:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many pending tasks for tenant {task_data.tenant_id}",
+                headers={"Retry-After": "60"}
+            )
 
         # 1. Save task as PENDING in Postgres
         new_task = Task(

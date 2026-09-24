@@ -550,5 +550,83 @@ def dlq_replay_bulk(
         raise typer.Exit(code=1)
 
 
+# ---------------------------------------------------------------------------
+# Tenant sub-commands
+# ---------------------------------------------------------------------------
+
+tenant_app = typer.Typer(
+    name="tenant",
+    help="Manage tenant limits and quotas",
+    add_completion=False,
+)
+app.add_typer(tenant_app, name="tenant")
+
+
+@tenant_app.command("set-limit")
+def tenant_set_limit(
+    tenant_id: str = typer.Argument(..., help="Tenant ID"),
+    rate: float = typer.Option(..., "--rate", help="Tokens per second"),
+    burst: int = typer.Option(..., "--burst", help="Maximum burst capacity"),
+    concurrent: int = typer.Option(..., "--concurrent", help="Maximum concurrent tasks"),
+    weight: int = typer.Option(1, "--weight", help="Tenant scheduling weight"),
+    api_url: str = typer.Option(DEFAULT_API_URL, "--api-url", envvar="FAIRLANE_API_URL", help="Fairlane API base URL"),
+) -> None:
+    """Set custom rate limits and quotas for a tenant."""
+    body = {
+        "rate_per_second": rate,
+        "burst_capacity": burst,
+        "max_concurrent": concurrent,
+        "weight": weight,
+    }
+    try:
+        with httpx.Client(base_url=api_url, timeout=10.0) as client:
+            resp = client.put(f"/tenants/{tenant_id}/limits", json=body)
+            if resp.status_code == 200:
+                typer.secho(f"✓ Limits updated for tenant '{tenant_id}'", fg=typer.colors.GREEN, bold=True)
+            else:
+                typer.secho(f"Error (HTTP {resp.status_code}): {resp.text}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+    except httpx.RequestError as e:
+        typer.secho(f"Error connecting to API at {api_url}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+@tenant_app.command("show")
+def tenant_show(
+    tenant_id: str = typer.Argument(..., help="Tenant ID"),
+    api_url: str = typer.Option(DEFAULT_API_URL, "--api-url", envvar="FAIRLANE_API_URL", help="Fairlane API base URL"),
+) -> None:
+    """Show limits and current usage for a tenant."""
+    try:
+        with httpx.Client(base_url=api_url, timeout=10.0) as client:
+            resp_limits = client.get(f"/tenants/{tenant_id}/limits")
+            resp_usage = client.get(f"/tenants/{tenant_id}/usage")
+            
+            if resp_limits.status_code != 200 or resp_usage.status_code != 200:
+                typer.secho(f"Error fetching tenant data", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+
+            limits = resp_limits.json()
+            usage = resp_usage.json()
+            
+            typer.secho(f"Tenant: {tenant_id}", bold=True)
+            typer.echo("=" * 40)
+            typer.secho("Limits:", bold=True)
+            typer.echo(f"  Rate:           {limits['rate_per_second']} tokens/sec")
+            typer.echo(f"  Burst Capacity: {limits['burst_capacity']} tokens")
+            typer.echo(f"  Max Concurrent: {limits['max_concurrent']} tasks")
+            typer.echo(f"  Weight:         {limits['weight']}")
+            typer.echo()
+            typer.secho("Usage:", bold=True)
+            typer.echo(f"  Tokens Left:    {usage['tokens_remaining']:.2f}")
+            typer.echo(f"  Running Tasks:  {usage['running_tasks']}")
+            typer.echo(f"  Pending Tasks:  {usage['pending_tasks']}")
+            typer.echo("=" * 40)
+            
+    except httpx.RequestError as e:
+        typer.secho(f"Error connecting to API at {api_url}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()

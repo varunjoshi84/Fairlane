@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import (
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -241,4 +242,22 @@ class Worker(Base):
     current_task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         nullable=True,
+    )
+
+
+class TenantLimit(Base):
+    """Tenant configuration for rate limiting and fair scheduling."""
+
+    __tablename__ = "tenant_limits"
+
+    tenant_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    rate_per_second: Mapped[float] = mapped_column(Float, nullable=False, default=5.0)
+    burst_capacity: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    max_concurrent: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )

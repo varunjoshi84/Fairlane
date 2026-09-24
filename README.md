@@ -6,8 +6,9 @@ Fairlane is a lightweight, distributed task queue engine built with **Python 3.1
 
 ## Architecture Overview
 
-- **FastAPI API**: Receives task submission requests, persists initial `PENDING` tasks and audit logs in PostgreSQL, and pushes task events to a Redis Stream (`tasks:stream`).
-- **Async Workers**: Scalable background workers consuming from the Redis Stream via `XREADGROUP`, updating state to `RUNNING` and `SUCCEEDED`, and logging task lifecycle events into `task_events`.
+- **FastAPI API**: Receives task submission requests, enforces tenant quotas, persists initial `PENDING` tasks and audit logs in PostgreSQL, and pushes task events to a Redis Stream (`tasks:stream`).
+- **Async Workers**: Scalable background workers consuming from the Redis Stream via `XREADGROUP`, checking per-tenant rate limits (token bucket) and concurrency slots, updating state to `RUNNING` and `SUCCEEDED`, and logging task lifecycle events into `task_events`.
+- **Rate Limiting**: Built-in fair scheduling with atomic Redis Lua token buckets and concurrent slot tracking per tenant.
 - **PostgreSQL 16**: Durable storage for tasks, metadata, status, execution timestamps, and audit events.
 - **Redis 7 (Streams)**: Real-time message transport and consumer group coordination.
 - **Alembic**: Database migrations.

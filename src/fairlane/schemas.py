@@ -141,3 +141,22 @@ class BulkReplayResponse(BaseModel):
     task_ids: list[str]
 
 
+# ---------------------------------------------------------------------------
+# Tenant schemas
+# ---------------------------------------------------------------------------
+
+
+class TenantLimitsConfig(BaseModel):
+    rate_per_second: float = Field(..., gt=0)
+    burst_capacity: int = Field(..., gt=0)
+    max_concurrent: int = Field(..., gt=0)
+    weight: int = Field(1, ge=1)
+
+
+class TenantUsage(BaseModel):
+    tenant_id: str
+    tokens_remaining: float
+    running_tasks: int
+    pending_tasks: int
+
+

@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 
 from fairlane.api.routes import router
 from fairlane.api.dlq_routes import dlq_router
+from fairlane.api.tenant_routes import tenant_router
 from fairlane.config import settings
 from fairlane.db import init_db
 from fairlane.logging_setup import setup_logging
@@ -44,6 +45,7 @@ async def root():
 
 app.include_router(router)
 app.include_router(dlq_router)
+app.include_router(tenant_router)
 
 if __name__ == "__main__":
     import uvicorn

@@ -23,6 +23,7 @@ from fairlane.models import DeadLetter, FailureCategory, Task, TaskEvent, TaskSt
 from fairlane.retry import calculate_backoff, classify_failure, is_retryable
 from fairlane.scheduler import run_scheduler
 from fairlane.reaper import run_reaper
+from fairlane.ratelimit import RateLimiter
 
 logger = logging.getLogger("fairlane.worker")
 
@@ -116,7 +117,51 @@ class FairlaneWorker:
                 "task_type": task.task_type,
             }
 
+            slot_acquired = False
             try:
+                # 0. Check Rate Limits
+                if self.redis is not None:
+                    limiter = RateLimiter(self.redis)
+                    allow_res = await limiter.allow(task.tenant_id)
+                    if not allow_res.allowed:
+                        throttle_delay = allow_res.retry_after_ms / 1000.0 + random.uniform(0.1, 0.5)
+                        throttle_reason = "token_bucket"
+                    else:
+                        slot_acquired = await limiter.acquire_slot(task.tenant_id, str(task.id))
+                        if not slot_acquired:
+                            throttle_delay = 5.0 + random.uniform(0.1, 1.0)
+                            throttle_reason = "concurrency"
+                            
+                    if not allow_res.allowed or not slot_acquired:
+                        now = datetime.now(UTC)
+                        task.next_retry_at = now + timedelta(seconds=throttle_delay)
+                        task.status = TaskStatus.PENDING
+                        
+                        throttle_event = TaskEvent(
+                            task_id=task.id,
+                            event_type="THROTTLED",
+                            details={
+                                "reason": throttle_reason,
+                                "delay_seconds": throttle_delay,
+                                "tenant_id": task.tenant_id,
+                                "worker_id": self.worker_id,
+                            },
+                        )
+                        db.add(throttle_event)
+                        await db.commit()
+                        
+                        logger.info(
+                            f"Task {task.id} throttled ({throttle_reason}), delay: {throttle_delay:.2f}s",
+                            extra=log_context,
+                        )
+                        
+                        if self.redis is not None:
+                            await self.redis.xack(
+                                settings.redis_stream_name,
+                                settings.redis_consumer_group,
+                                message_id,
+                            )
+                        return
                 # 2. Mark Task as RUNNING in Postgres
                 now = datetime.now(UTC)
                 task.status = TaskStatus.RUNNING
@@ -395,6 +440,11 @@ class FairlaneWorker:
                         settings.redis_consumer_group,
                         message_id,
                     )
+
+            finally:
+                if self.redis is not None and slot_acquired:
+                    limiter = RateLimiter(self.redis)
+                    await limiter.release_slot(task.tenant_id, str(task.id))
 
             self.current_task_id = None
 
