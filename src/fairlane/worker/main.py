@@ -8,7 +8,7 @@ import random
 import signal
 import socket
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from redis.asyncio import Redis
@@ -20,6 +20,7 @@ from fairlane.config import settings
 from fairlane.db import async_session_factory
 from fairlane.logging_setup import setup_logging
 from fairlane.models import Task, TaskEvent, TaskStatus
+from fairlane.retry import calculate_backoff, is_retryable
 
 logger = logging.getLogger("fairlane.worker")
 
@@ -65,7 +66,7 @@ class FairlaneWorker:
                 raise
 
     async def process_task(self, message_id: str, data: dict[str, Any]) -> None:
-        """Execute task lifecycle: RUNNING -> Work -> SUCCEEDED / FAILED -> XACK."""
+        """Execute task lifecycle: RUNNING -> Work -> SUCCEEDED / RETRY_SCHEDULED / FAILED -> XACK."""
         task_id_str = data.get("task_id")
         if not task_id_str:
             logger.warning(
@@ -112,6 +113,7 @@ class FairlaneWorker:
                 # 2. Mark Task as RUNNING in Postgres
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now(UTC)
+                task.next_retry_at = None
                 task.attempts += 1
 
                 # Add task_events audit row
@@ -128,7 +130,7 @@ class FairlaneWorker:
 
                 logger.info(
                     f"Picked up task {task.id} (type: {task.task_type}, tenant: {task.tenant_id}, attempt: {task.attempts})",
-                    extra=log_context,
+                    extra={**log_context, "attempt": task.attempts},
                 )
 
                 # TODO: Heartbeat mechanism (send periodic heartbeats while task is running)
@@ -161,6 +163,7 @@ class FairlaneWorker:
                 # 4. Mark Task as SUCCEEDED in Postgres
                 task.status = TaskStatus.SUCCEEDED
                 task.finished_at = datetime.now(UTC)
+                task.next_retry_at = None
                 task.last_error = None
 
                 succeeded_event = TaskEvent(
@@ -189,37 +192,82 @@ class FairlaneWorker:
 
             except Exception as e:
                 await db.rollback()
-                logger.error(
-                    f"Error processing task {task_uuid}: {e}",
-                    extra=log_context,
-                )
+                retryable = is_retryable(e)
 
-                # TODO: Implement retry logic with exponential backoff & jitter
-                # TODO: Route to Dead Letter Queue (DLQ) if task.attempts >= task.max_attempts
-
-                # Record FAILED in Postgres, set last_error, record audit event, and XACK
                 try:
                     result = await db.execute(select(Task).where(Task.id == task_uuid))
                     failed_task = result.scalar_one_or_none()
                     if failed_task:
-                        failed_task.status = TaskStatus.FAILED
-                        failed_task.last_error = str(e)
-                        failed_task.finished_at = datetime.now(UTC)
-                        failed_event = TaskEvent(
-                            task_id=failed_task.id,
-                            event_type="FAILED",
-                            details={
-                                "error": str(e),
-                                "worker_id": self.worker_id,
-                                "attempt": failed_task.attempts,
-                            },
-                        )
-                        db.add(failed_event)
-                        await db.commit()
-                except Exception as db_err:
-                    logger.error(f"Failed to record FAILED status in DB: {db_err}", extra=log_context)
+                        if retryable and failed_task.attempts < failed_task.max_attempts:
+                            # Calculate exponential backoff delay with jitter
+                            delay_seconds = calculate_backoff(failed_task.attempts)
+                            next_retry_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
 
-                # XACK the message on failure
+                            failed_task.status = TaskStatus.PENDING
+                            failed_task.next_retry_at = next_retry_at
+                            failed_task.last_error = str(e)
+
+                            retry_event = TaskEvent(
+                                task_id=failed_task.id,
+                                event_type="RETRY_SCHEDULED",
+                                details={
+                                    "error": str(e),
+                                    "worker_id": self.worker_id,
+                                    "attempt": failed_task.attempts,
+                                    "max_attempts": failed_task.max_attempts,
+                                    "delay_seconds": round(delay_seconds, 2),
+                                    "next_retry_at": next_retry_at.isoformat(),
+                                },
+                            )
+                            db.add(retry_event)
+                            await db.commit()
+
+                            logger.info(
+                                f"Task {failed_task.id} failed (attempt {failed_task.attempts}/{failed_task.max_attempts}). "
+                                f"Retry scheduled in {delay_seconds:.2f}s at {next_retry_at.isoformat()}",
+                                extra={
+                                    **log_context,
+                                    "attempt": failed_task.attempts,
+                                    "max_attempts": failed_task.max_attempts,
+                                    "delay_seconds": round(delay_seconds, 2),
+                                    "next_retry_at": next_retry_at.isoformat(),
+                                    "retryable": True,
+                                },
+                            )
+                        else:
+                            # Permanent failure or max attempts exhausted
+                            failed_task.status = TaskStatus.FAILED
+                            failed_task.finished_at = datetime.now(UTC)
+                            failed_task.next_retry_at = None
+                            failed_task.last_error = str(e)
+
+                            failed_event = TaskEvent(
+                                task_id=failed_task.id,
+                                event_type="FAILED",
+                                details={
+                                    "error": str(e),
+                                    "worker_id": self.worker_id,
+                                    "attempt": failed_task.attempts,
+                                    "max_attempts": failed_task.max_attempts,
+                                    "retryable": retryable,
+                                },
+                            )
+                            db.add(failed_event)
+                            await db.commit()
+
+                            logger.error(
+                                f"Task {failed_task.id} failed permanently (attempt {failed_task.attempts}/{failed_task.max_attempts}, retryable: {retryable}): {e}",
+                                extra={
+                                    **log_context,
+                                    "attempt": failed_task.attempts,
+                                    "max_attempts": failed_task.max_attempts,
+                                    "retryable": retryable,
+                                },
+                            )
+                except Exception as db_err:
+                    logger.error(f"Failed to record failure/retry state in DB: {db_err}", extra=log_context)
+
+                # XACK the message from the stream
                 if self.redis is not None:
                     await self.redis.xack(
                         settings.redis_stream_name,

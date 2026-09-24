@@ -86,6 +86,11 @@ class Task(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
@@ -99,6 +104,7 @@ class Task(Base):
     __table_args__ = (
         Index("ix_tasks_tenant_status", "tenant_id", "status"),
         Index("ix_tasks_created_at", "created_at"),
+        Index("ix_tasks_next_retry_at", "next_retry_at"),
     )
 
 

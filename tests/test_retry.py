@@ -4,7 +4,6 @@ import pytest
 
 from fairlane.retry import calculate_backoff, is_retryable
 
-
 # ---------------------------------------------------------------------------
 # calculate_backoff – deterministic (no jitter)
 # ---------------------------------------------------------------------------

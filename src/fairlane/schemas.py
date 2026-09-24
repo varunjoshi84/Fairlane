@@ -29,4 +29,5 @@ class TaskResponse(BaseModel):
     updated_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    next_retry_at: datetime | None = None
     last_error: str | None = None
