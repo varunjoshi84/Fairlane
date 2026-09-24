@@ -141,7 +141,7 @@ def timeline(
                         color = typer.colors.BLUE
                     elif event_type == "RETRY_SCHEDULED":
                         color = typer.colors.YELLOW
-                    elif event_type == "REQUEUED":
+                    elif event_type in ("REQUEUED", "RECLAIMED"):
                         color = typer.colors.MAGENTA
                     elif event_type == "SUCCEEDED":
                         color = typer.colors.GREEN
@@ -158,6 +158,8 @@ def timeline(
                         detail_parts.append(f"error: {details['error']}")
                     if "reason" in details and event_type == "REQUEUED":
                         detail_parts.append(f"{details['reason']}")
+                    if "dead_worker_id" in details:
+                        detail_parts.append(f"dead worker: {details['dead_worker_id']}")
                     if "duration_ms" in details:
                         detail_parts.append(f"{details['duration_ms']}ms")
                     if "failure_category" in details:
@@ -177,6 +179,67 @@ def timeline(
                 typer.secho(f"Error fetching task events (HTTP {resp.status_code}):", fg=typer.colors.RED, err=True)
                 typer.echo(resp.text, err=True)
                 raise typer.Exit(code=1)
+    except httpx.RequestError as e:
+        typer.secho(f"Error connecting to API at {api_url}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+def _humanize_seconds(seconds: float) -> str:
+    """Convert seconds into a human-readable string like '2s ago' or '3m ago'."""
+    if seconds < 0:
+        return "in the future"
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    return f"{int(seconds // 3600)}h ago"
+
+
+@app.command("workers")
+def workers_cmd(
+    api_url: str = typer.Option(DEFAULT_API_URL, "--api-url", envvar="FAIRLANE_API_URL", help="Fairlane API base URL"),
+) -> None:
+    """List all registered workers with status and heartbeat."""
+    try:
+        with httpx.Client(base_url=api_url, timeout=10.0) as client:
+            resp = client.get("/workers")
+            if resp.status_code != 200:
+                typer.secho(f"Error (HTTP {resp.status_code}): {resp.text}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+
+            workers_list = resp.json()
+            if not workers_list:
+                typer.secho("No workers found.", fg=typer.colors.YELLOW)
+                return
+
+            now = datetime.now(datetime.now().astimezone().tzinfo)
+
+            headers = ["WORKER ID", "STATUS", "HEARTBEAT", "CURRENT TASK"]
+            rows = []
+            for w in workers_list:
+                # Compute human-readable heartbeat
+                hb_str = "—"
+                if w.get("last_heartbeat_at"):
+                    try:
+                        hb_dt = datetime.fromisoformat(w["last_heartbeat_at"])
+                        diff = (now - hb_dt).total_seconds()
+                        hb_str = _humanize_seconds(diff)
+                    except Exception:
+                        hb_str = str(w["last_heartbeat_at"])[:19]
+
+                task_str = str(w.get("current_task_id") or "—")[:12]
+                if task_str and task_str != "—":
+                    task_str = task_str[:8] + "…"
+
+                rows.append([
+                    w["worker_id"],
+                    w["status"],
+                    hb_str,
+                    task_str,
+                ])
+
+            _print_table(headers, rows)
+
     except httpx.RequestError as e:
         typer.secho(f"Error connecting to API at {api_url}: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     redis_stream_name: str = "tasks:stream"
     redis_consumer_group: str = "fairlane:workers"
 
+    # Worker Configuration
+    heartbeat_interval_seconds: int = 3
+    heartbeat_ttl_seconds: int = 10
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:

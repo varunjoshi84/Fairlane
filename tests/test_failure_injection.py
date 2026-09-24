@@ -17,8 +17,16 @@ def mock_worker():
     return worker
 
 
+@pytest.fixture
+async def connected_worker():
+    """Create a FairlaneWorker with Redis connected."""
+    worker = FairlaneWorker()
+    await worker.init_redis()
+    return worker
+
+
 @pytest.mark.asyncio
-async def test_failure_injection_schedules_retry(mock_worker):
+async def test_failure_injection_schedules_retry(connected_worker):
     """Verify retryable failure sets status to PENDING and populates next_retry_at."""
     task_id = uuid.uuid4()
     async with async_session_factory() as db:
@@ -36,7 +44,7 @@ async def test_failure_injection_schedules_retry(mock_worker):
         await db.commit()
 
     # Process task with worker
-    await mock_worker.process_task(
+    await connected_worker.process_task(
         message_id="1-0",
         data={"task_id": str(task_id)},
     )
@@ -58,12 +66,12 @@ async def test_failure_injection_schedules_retry(mock_worker):
         )
         events = events_result.scalars().all()
         event_types = [e.event_type for e in events]
-        assert "RUNNING" in event_types
+        assert "STARTED" in event_types
         assert "RETRY_SCHEDULED" in event_types
 
 
 @pytest.mark.asyncio
-async def test_failure_injection_max_attempts_reached(mock_worker):
+async def test_failure_injection_max_attempts_reached(connected_worker):
     """Verify failure transitions to FAILED when attempts reach max_attempts."""
     task_id = uuid.uuid4()
     async with async_session_factory() as db:
@@ -80,7 +88,7 @@ async def test_failure_injection_max_attempts_reached(mock_worker):
         db.add(task)
         await db.commit()
 
-    await mock_worker.process_task(
+    await connected_worker.process_task(
         message_id="2-0",
         data={"task_id": str(task_id)},
     )
@@ -88,7 +96,7 @@ async def test_failure_injection_max_attempts_reached(mock_worker):
     async with async_session_factory() as db:
         res = await db.execute(select(Task).where(Task.id == task_id))
         t = res.scalar_one()
-        assert t.status == TaskStatus.FAILED
+        assert t.status == TaskStatus.DEAD
         assert t.attempts == 5
         assert t.finished_at is not None
         assert t.next_retry_at is None
@@ -98,11 +106,11 @@ async def test_failure_injection_max_attempts_reached(mock_worker):
         )
         events = events_result.scalars().all()
         event_types = [e.event_type for e in events]
-        assert "FAILED" in event_types
+        assert "DEAD_LETTERED" in event_types
 
 
 @pytest.mark.asyncio
-async def test_failure_injection_fail_rate(mock_worker):
+async def test_failure_injection_fail_rate(connected_worker):
     """Verify payload {'fail_rate': 0.0} succeeds and {'fail_rate': 1.0} schedules retry."""
     # 1. Deterministic success with fail_rate = 0.0
     pass_task_id = uuid.uuid4()
@@ -120,7 +128,7 @@ async def test_failure_injection_fail_rate(mock_worker):
         db.add(pass_task)
         await db.commit()
 
-    await mock_worker.process_task(
+    await connected_worker.process_task(
         message_id="3-0",
         data={"task_id": str(pass_task_id)},
     )
@@ -147,7 +155,7 @@ async def test_failure_injection_fail_rate(mock_worker):
         db.add(fail_task)
         await db.commit()
 
-    await mock_worker.process_task(
+    await connected_worker.process_task(
         message_id="4-0",
         data={"task_id": str(fail_task_id)},
     )
@@ -161,7 +169,7 @@ async def test_failure_injection_fail_rate(mock_worker):
 
 
 @pytest.mark.asyncio
-async def test_failure_injection_fail_until_attempt(mock_worker):
+async def test_failure_injection_fail_until_attempt(connected_worker):
     """Verify payload {'fail_until_attempt': 3} schedules retries until attempt 3 is reached."""
     task_id = uuid.uuid4()
 
@@ -181,7 +189,7 @@ async def test_failure_injection_fail_until_attempt(mock_worker):
         await db.commit()
 
     # 1st attempt: should schedule retry (attempts becomes 1 < 3)
-    await mock_worker.process_task(message_id="5-1", data={"task_id": str(task_id)})
+    await connected_worker.process_task(message_id="5-1", data={"task_id": str(task_id)})
     async with async_session_factory() as db:
         res = await db.execute(select(Task).where(Task.id == task_id))
         t = res.scalar_one()
@@ -190,7 +198,7 @@ async def test_failure_injection_fail_until_attempt(mock_worker):
         assert t.next_retry_at is not None
 
     # 2nd attempt: should schedule retry (attempts becomes 2 < 3)
-    await mock_worker.process_task(message_id="5-2", data={"task_id": str(task_id)})
+    await connected_worker.process_task(message_id="5-2", data={"task_id": str(task_id)})
     async with async_session_factory() as db:
         res = await db.execute(select(Task).where(Task.id == task_id))
         t = res.scalar_one()
@@ -199,7 +207,7 @@ async def test_failure_injection_fail_until_attempt(mock_worker):
         assert t.next_retry_at is not None
 
     # 3rd attempt: should succeed (attempts becomes 3 >= 3)
-    await mock_worker.process_task(message_id="5-3", data={"task_id": str(task_id)})
+    await connected_worker.process_task(message_id="5-3", data={"task_id": str(task_id)})
     async with async_session_factory() as db:
         res = await db.execute(select(Task).where(Task.id == task_id))
         t = res.scalar_one()

@@ -33,6 +33,14 @@ class TaskStatus(enum.StrEnum):
     DEAD = "DEAD"
 
 
+class WorkerStatus(enum.StrEnum):
+    """Lifecycle states of a worker."""
+
+    ACTIVE = "ACTIVE"
+    DEAD = "DEAD"
+    STOPPED = "STOPPED"
+
+
 class Task(Base):
     """Represents an asynchronous task submitted to the engine."""
 
@@ -92,6 +100,11 @@ class Task(Base):
         index=True,
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     # Relationships
     events: Mapped[list["TaskEvent"]] = relationship(
@@ -200,4 +213,32 @@ class DeadLetter(Base):
     __table_args__ = (
         Index("ix_dead_letters_tenant_id", "tenant_id"),
         Index("ix_dead_letters_failure_category", "failure_category"),
+    )
+
+
+class Worker(Base):
+    """Tracks active and stopped workers."""
+
+    __tablename__ = "workers"
+
+    worker_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[WorkerStatus] = mapped_column(
+        Enum(WorkerStatus, name="worker_status_enum", native_enum=True),
+        nullable=False,
+        default=WorkerStatus.ACTIVE,
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    last_heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+    current_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
     )

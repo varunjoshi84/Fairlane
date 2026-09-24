@@ -10,7 +10,7 @@ class TaskCreate(BaseModel):
     task_type: str = Field(..., description="The type/name of the task to execute")
     payload: dict[str, Any] = Field(default_factory=dict, description="Task arguments/data")
     priority: int = Field(default=5, ge=1, le=10, description="Task priority (1 is highest, 10 is lowest)")
-    # TODO: Implement idempotency key
+    idempotency_key: str | None = Field(None, description="Optional idempotency key for deduplication")
 
 
 class TaskEventResponse(BaseModel):
@@ -41,6 +41,8 @@ class TaskResponse(BaseModel):
     finished_at: datetime | None = None
     next_retry_at: datetime | None = None
     last_error: str | None = None
+    locked_by: str | None = None
+    locked_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------

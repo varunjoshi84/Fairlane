@@ -14,14 +14,15 @@ from typing import Any
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import ResponseError
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from fairlane.config import settings
 from fairlane.db import async_session_factory
 from fairlane.logging_setup import setup_logging
-from fairlane.models import DeadLetter, FailureCategory, Task, TaskEvent, TaskStatus
+from fairlane.models import DeadLetter, FailureCategory, Task, TaskEvent, TaskStatus, Worker, WorkerStatus
 from fairlane.retry import calculate_backoff, classify_failure, is_retryable
 from fairlane.scheduler import run_scheduler
+from fairlane.reaper import run_reaper
 
 logger = logging.getLogger("fairlane.worker")
 
@@ -30,10 +31,14 @@ class FairlaneWorker:
     """Async worker daemon for processing tasks from Redis Streams."""
 
     def __init__(self) -> None:
-        self.worker_id = f"worker-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+        self.hostname = socket.gethostname()
+        self.worker_id = f"worker-{self.hostname}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         self.stop_event = asyncio.Event()
         self.redis: Redis | None = None
         self.scheduler_task: asyncio.Task | None = None
+        self.heartbeat_task: asyncio.Task | None = None
+        self.reaper_task: asyncio.Task | None = None
+        self.current_task_id: uuid.UUID | None = None
 
     async def init_redis(self) -> None:
         """Initialize Redis connection and ensure consumer group exists."""
@@ -113,30 +118,31 @@ class FairlaneWorker:
 
             try:
                 # 2. Mark Task as RUNNING in Postgres
+                now = datetime.now(UTC)
                 task.status = TaskStatus.RUNNING
-                task.started_at = datetime.now(UTC)
+                task.started_at = now
                 task.next_retry_at = None
                 task.attempts += 1
+                task.locked_by = self.worker_id
+                task.locked_at = now
+                self.current_task_id = task.id
 
-                # Add task_events audit row
-                running_event = TaskEvent(
+                # Add task_events audit row - STARTED event
+                started_event = TaskEvent(
                     task_id=task.id,
-                    event_type="RUNNING",
+                    event_type="STARTED",
                     details={
                         "worker_id": self.worker_id,
                         "attempt": task.attempts,
                     },
                 )
-                db.add(running_event)
+                db.add(started_event)
                 await db.commit()
 
                 logger.info(
                     f"Picked up task {task.id} (type: {task.task_type}, tenant: {task.tenant_id}, attempt: {task.attempts})",
                     extra={**log_context, "attempt": task.attempts},
                 )
-
-                # TODO: Heartbeat mechanism (send periodic heartbeats while task is running)
-                # TODO: Priority-aware task execution
 
                 # --- Failure-injection hooks for testing ---
                 payload = task.payload or {}
@@ -170,21 +176,55 @@ class FairlaneWorker:
                         "Injected transient failure: payload 'fail_type' is 'transient'"
                     )
 
-                # 3. Simulate work with a short sleep
-                await asyncio.sleep(0.5)
+                # Sleep support: {"sleep": N} sleeps for N seconds
+                sleep_seconds = payload.get("sleep")
+                if sleep_seconds:
+                    sleep_seconds = float(sleep_seconds)
+                    logger.info(
+                        f"Task {task.id} sleeping for {sleep_seconds}s",
+                        extra=log_context,
+                    )
+                    await asyncio.sleep(sleep_seconds)
+                else:
+                    # Default short sleep to simulate work
+                    await asyncio.sleep(0.5)
 
-                # 4. Mark Task as SUCCEEDED in Postgres
-                task.status = TaskStatus.SUCCEEDED
-                task.finished_at = datetime.now(UTC)
-                task.next_retry_at = None
-                task.last_error = None
+                # 4. Mark Task as SUCCEEDED in Postgres — safe completion
+                #    Only update if this worker still owns the task (locked_by check)
+                result = await db.execute(
+                    update(Task)
+                    .where(Task.id == task.id, Task.locked_by == self.worker_id)
+                    .values(
+                        status=TaskStatus.SUCCEEDED,
+                        finished_at=datetime.now(UTC),
+                        next_retry_at=None,
+                        last_error=None,
+                        locked_by=None,
+                        locked_at=None,
+                    )
+                )
+
+                if result.rowcount == 0:
+                    # This worker lost ownership — another worker reclaimed the task
+                    logger.warning(
+                        f"Task {task.id}: lost ownership, discarding result",
+                        extra=log_context,
+                    )
+                    if self.redis is not None:
+                        await self.redis.xack(
+                            settings.redis_stream_name,
+                            settings.redis_consumer_group,
+                            message_id,
+                        )
+                    self.current_task_id = None
+                    return
 
                 succeeded_event = TaskEvent(
                     task_id=task.id,
                     event_type="SUCCEEDED",
                     details={
                         "worker_id": self.worker_id,
-                        "duration_ms": 500,
+                        "duration_ms": int((sleep_seconds if sleep_seconds else 0.5) * 1000),
                     },
                 )
                 db.add(succeeded_event)
@@ -208,7 +248,12 @@ class FairlaneWorker:
                 retryable = is_retryable(e)
 
                 try:
-                    result = await db.execute(select(Task).where(Task.id == task_uuid))
+                    from sqlalchemy.orm import selectinload
+                    result = await db.execute(
+                        select(Task)
+                        .where(Task.id == task_uuid)
+                        .options(selectinload(Task.events))
+                    )
                     failed_task = result.scalar_one_or_none()
                     if failed_task:
                         # Build cumulative error history from task_events.
@@ -235,6 +280,8 @@ class FairlaneWorker:
                             failed_task.status = TaskStatus.PENDING
                             failed_task.next_retry_at = next_retry_at
                             failed_task.last_error = str(e)
+                            failed_task.locked_by = None
+                            failed_task.locked_at = None
 
                             retry_event = TaskEvent(
                                 task_id=failed_task.id,
@@ -292,6 +339,8 @@ class FairlaneWorker:
                             failed_task.finished_at = now
                             failed_task.next_retry_at = None
                             failed_task.last_error = str(e)
+                            failed_task.locked_by = None
+                            failed_task.locked_at = None
 
                             # 2. Insert dead_letters row
                             dead_letter = DeadLetter(
@@ -347,6 +396,44 @@ class FairlaneWorker:
                         message_id,
                     )
 
+            self.current_task_id = None
+
+    async def heartbeat_loop(self) -> None:
+        """Background task to report worker health to Redis and PostgreSQL."""
+        assert self.redis is not None
+        redis_key = f"worker:{self.worker_id}:alive"
+
+        while not self.stop_event.is_set():
+            try:
+                # Set Redis key with TTL
+                await self.redis.set(
+                    redis_key,
+                    "1",
+                    ex=settings.heartbeat_ttl_seconds
+                )
+
+                # Update PostgreSQL
+                async with async_session_factory() as db:
+                    worker = await db.get(Worker, self.worker_id)
+                    if worker:
+                        worker.last_heartbeat_at = datetime.now(UTC)
+                        worker.current_task_id = self.current_task_id
+                        await db.commit()
+            except Exception as e:
+                logger.error(
+                    f"Heartbeat failed: {e}",
+                    extra={"worker_id": self.worker_id},
+                )
+
+            # Sleep until next heartbeat interval or stop_event is set
+            try:
+                await asyncio.wait_for(
+                    self.stop_event.wait(),
+                    timeout=settings.heartbeat_interval_seconds
+                )
+            except asyncio.TimeoutError:
+                pass  # Expected, time to heartbeat again
+
     async def run(self) -> None:
         """Main worker loop."""
         setup_logging(settings.log_level)
@@ -358,8 +445,26 @@ class FairlaneWorker:
         await self.init_redis()
         assert self.redis is not None
 
+        # Register worker in DB as ACTIVE
+        async with async_session_factory() as db:
+            worker = Worker(
+                worker_id=self.worker_id,
+                hostname=self.hostname,
+                status=WorkerStatus.ACTIVE,
+                started_at=datetime.now(UTC),
+                last_heartbeat_at=datetime.now(UTC),
+            )
+            await db.merge(worker)
+            await db.commit()
+
         # Launch the retry scheduler as a background task.
         self.scheduler_task = asyncio.create_task(run_scheduler(self.stop_event))
+
+        # Launch heartbeat task
+        self.heartbeat_task = asyncio.create_task(self.heartbeat_loop())
+
+        # Launch reaper task (dead worker detection + task reclamation)
+        self.reaper_task = asyncio.create_task(run_reaper(self.redis, self.stop_event))
 
         logger.info(
             f"Worker '{self.worker_id}' listening on stream '{settings.redis_stream_name}'...",
@@ -368,9 +473,6 @@ class FairlaneWorker:
 
         while not self.stop_event.is_set():
             try:
-                # TODO: Implement XAUTOCLAIM for crash recovery of abandoned pending entries (PEL)
-                # TODO: Implement worker heartbeat reporting to Redis / DB
-
                 # Read messages using XREADGROUP (block for 2000ms)
                 messages = await self.redis.xreadgroup(
                     groupname=settings.redis_consumer_group,
@@ -422,6 +524,31 @@ class FairlaneWorker:
             self.scheduler_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.scheduler_task
+
+        # Stop the heartbeat task.
+        if self.heartbeat_task and not self.heartbeat_task.done():
+            self.heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.heartbeat_task
+
+        # Stop the reaper task.
+        if self.reaper_task and not self.reaper_task.done():
+            self.reaper_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.reaper_task
+
+        try:
+            if self.redis:
+                await self.redis.delete(f"worker:{self.worker_id}:alive")
+            
+            async with async_session_factory() as db:
+                worker = await db.get(Worker, self.worker_id)
+                if worker:
+                    worker.status = WorkerStatus.STOPPED
+                    await db.commit()
+        except Exception as e:
+            logger.error(f"Failed to cleanly stop worker in DB/Redis: {e}")
+
         if self.redis:
             await self.redis.aclose()
         logger.info(

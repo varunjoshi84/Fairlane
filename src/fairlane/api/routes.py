@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fairlane.db import check_db_health, get_db
-from fairlane.models import Task, TaskEvent, TaskStatus
+from fairlane.models import Task, TaskEvent, TaskStatus, Worker
 from fairlane.redis_client import check_redis_health, push_task_to_stream
 from fairlane.schemas import TaskCreate, TaskEventResponse, TaskResponse
 
@@ -31,11 +31,17 @@ async def health_check():
 @router.post("/tasks", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_task(task_data: TaskCreate, db: AsyncSession = Depends(get_db)):
     """Create a new task, save to DB, and push to Redis Stream."""
-    # TODO: Implement rate limiting
-    # TODO: Implement priority scheduling handling
-    # TODO: Implement idempotency key logic
 
     try:
+        # Idempotency check: if idempotency_key is provided, look for existing task
+        if task_data.idempotency_key:
+            result = await db.execute(
+                select(Task).where(Task.idempotency_key == task_data.idempotency_key)
+            )
+            existing_task = result.scalar_one_or_none()
+            if existing_task:
+                return {"task_id": str(existing_task.id)}
+
         # 1. Save task as PENDING in Postgres
         new_task = Task(
             tenant_id=task_data.tenant_id,
@@ -43,6 +49,7 @@ async def create_task(task_data: TaskCreate, db: AsyncSession = Depends(get_db))
             payload=task_data.payload,
             priority=task_data.priority,
             status=TaskStatus.PENDING,
+            idempotency_key=task_data.idempotency_key,
         )
         db.add(new_task)
         await db.flush()  # to generate new_task.id
@@ -92,3 +99,22 @@ async def get_task_events(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.created_at.asc())
     )
     return result.scalars().all()
+
+
+@router.get("/workers")
+async def list_workers(db: AsyncSession = Depends(get_db)):
+    """List all registered workers."""
+    result = await db.execute(select(Worker))
+    workers = result.scalars().all()
+    return [
+        {
+            "worker_id": w.worker_id,
+            "hostname": w.hostname,
+            "status": w.status.value,
+            "started_at": w.started_at.isoformat() if w.started_at else None,
+            "last_heartbeat_at": w.last_heartbeat_at.isoformat() if w.last_heartbeat_at else None,
+            "current_task_id": str(w.current_task_id) if w.current_task_id else None,
+        }
+        for w in workers
+    ]
+

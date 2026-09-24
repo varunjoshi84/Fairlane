@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate test lint
+.PHONY: up down logs migrate test lint demo-crash
 
 up:
 	docker compose up -d
@@ -17,3 +17,6 @@ test:
 
 lint:
 	ruff check .
+
+demo-crash:
+	python scripts/demo_crash.py
