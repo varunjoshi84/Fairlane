@@ -21,6 +21,7 @@ from fairlane.db import async_session_factory
 from fairlane.logging_setup import setup_logging
 from fairlane.models import Task, TaskEvent, TaskStatus
 from fairlane.retry import calculate_backoff, is_retryable
+from fairlane.scheduler import run_scheduler
 
 logger = logging.getLogger("fairlane.worker")
 
@@ -32,6 +33,7 @@ class FairlaneWorker:
         self.worker_id = f"worker-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         self.stop_event = asyncio.Event()
         self.redis: Redis | None = None
+        self.scheduler_task: asyncio.Task | None = None
 
     async def init_redis(self) -> None:
         """Initialize Redis connection and ensure consumer group exists."""
@@ -286,6 +288,9 @@ class FairlaneWorker:
         await self.init_redis()
         assert self.redis is not None
 
+        # Launch the retry scheduler as a background task.
+        self.scheduler_task = asyncio.create_task(run_scheduler(self.stop_event))
+
         logger.info(
             f"Worker '{self.worker_id}' listening on stream '{settings.redis_stream_name}'...",
             extra={"worker_id": self.worker_id},
@@ -342,6 +347,11 @@ class FairlaneWorker:
             f"Shutting down worker '{self.worker_id}'...",
             extra={"worker_id": self.worker_id},
         )
+        # Stop the retry scheduler.
+        if self.scheduler_task and not self.scheduler_task.done():
+            self.scheduler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.scheduler_task
         if self.redis:
             await self.redis.aclose()
         logger.info(
