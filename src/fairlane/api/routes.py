@@ -79,8 +79,9 @@ async def create_task(task_data: TaskCreate, db: AsyncSession = Depends(get_db))
         await db.commit()
         await db.refresh(new_task)
 
-        # 3. Push the task id to the Redis Stream "tasks:stream"
-        await push_task_to_stream(str(new_task.id))
+        # 3. Push the task to the tenant's waiting room
+        from fairlane.scheduler import enqueue
+        await enqueue(new_task)
 
         # 4. Return the task id
         return {"task_id": str(new_task.id)}

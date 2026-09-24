@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 from fairlane.config import settings
 from fairlane.db import get_db
 from fairlane.models import Task, TaskStatus, TenantLimit
-from fairlane.redis_client import get_redis
+from fairlane.redis_client import get_redis_client
 from fairlane.schemas import TenantLimitsConfig, TenantUsage
 from fairlane.ratelimit import RateLimiter
 
@@ -43,6 +43,11 @@ async def set_tenant_limits(
         db.add(limit)
     
     await db.commit()
+    
+    redis = get_redis_client()
+    await redis.set(f"tenant_weight:{tenant_id}", config.weight)
+    await redis.aclose()
+    
     return config
 
 

@@ -181,7 +181,8 @@ async def _replay_task(
     await db.commit()
 
     # Push to Redis stream (outside transaction — best-effort).
-    await push_task_to_stream(str(task.id))
+    from fairlane.scheduler import enqueue
+    await enqueue(task)
 
     logger.info(
         "Replayed task %s (replay_count=%d, payload_patch=%s)",

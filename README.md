@@ -141,6 +141,42 @@ curl http://localhost:8000/tasks/65631ce2-f26d-4f5d-900c-e8a875a6dacb
 
 ---
 
+## Scheduling & Weighted Fair Queuing (WFQ)
+
+Fairlane implements advanced task scheduling using Weighted Fair Queuing (WFQ) and priority aging to ensure fairness across multiple tenants while respecting task priorities.
+
+```text
+API / Replay / Retry
+        │
+        ▼
+┌─────────────────────────────────┐
+│     Waiting Rooms (Redis ZSETs) │
+│     (Per-Tenant priority queues)│
+└─────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────┐
+│     Lua Dispatcher (WFQ)        │
+│     (Applies weights & aging)   │
+└─────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────┐
+│     Redis Stream (Shallow)      │
+└─────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────┐
+│     Workers (Execution)         │
+└─────────────────────────────────┘
+```
+
+- **Priority Aging**: Lower priority tasks gradually gain priority over time to prevent starvation.
+- **Weighted Fair Queuing**: Tenants can be assigned weights to guarantee a minimum share of system throughput during congestion.
+- **Atomic Dispatch**: A background dispatcher loop atomically selects the next best task based on virtual time and moves it to the Redis stream using a Lua script.
+
+---
+
 ## CLI Usage
 
 Fairlane comes with a Typer-based CLI:

@@ -21,7 +21,8 @@ from fairlane.db import async_session_factory
 from fairlane.logging_setup import setup_logging
 from fairlane.models import DeadLetter, FailureCategory, Task, TaskEvent, TaskStatus, Worker, WorkerStatus
 from fairlane.retry import calculate_backoff, classify_failure, is_retryable
-from fairlane.scheduler import run_scheduler
+from fairlane.scheduler import enqueue, run_scheduler
+from fairlane.scheduler.dispatcher import run_dispatcher
 from fairlane.reaper import run_reaper
 from fairlane.ratelimit import RateLimiter
 
@@ -39,6 +40,7 @@ class FairlaneWorker:
         self.scheduler_task: asyncio.Task | None = None
         self.heartbeat_task: asyncio.Task | None = None
         self.reaper_task: asyncio.Task | None = None
+        self.dispatcher_task: asyncio.Task | None = None
         self.current_task_id: uuid.UUID | None = None
 
     async def init_redis(self) -> None:
@@ -445,6 +447,9 @@ class FairlaneWorker:
                 if self.redis is not None and slot_acquired:
                     limiter = RateLimiter(self.redis)
                     await limiter.release_slot(task.tenant_id, str(task.id))
+                
+                if self.redis is not None and task is not None:
+                    await self.redis.decr(f"instream:{task.tenant_id}")
 
             self.current_task_id = None
 
@@ -516,6 +521,9 @@ class FairlaneWorker:
         # Launch reaper task (dead worker detection + task reclamation)
         self.reaper_task = asyncio.create_task(run_reaper(self.redis, self.stop_event))
 
+        # Launch dispatcher task (WFQ scheduling from waiting room to stream)
+        self.dispatcher_task = asyncio.create_task(run_dispatcher(self.stop_event))
+
         logger.info(
             f"Worker '{self.worker_id}' listening on stream '{settings.redis_stream_name}'...",
             extra={"worker_id": self.worker_id},
@@ -586,6 +594,12 @@ class FairlaneWorker:
             self.reaper_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.reaper_task
+
+        # Stop the dispatcher task.
+        if self.dispatcher_task and not self.dispatcher_task.done():
+            self.dispatcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.dispatcher_task
 
         try:
             if self.redis:

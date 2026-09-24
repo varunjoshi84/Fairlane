@@ -23,3 +23,6 @@ demo-crash:
 
 demo-fairness:
 	python scripts/demo_fairness.py
+
+demo-priority:
+	python scripts/demo_priority.py

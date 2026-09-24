@@ -106,6 +106,10 @@ class Task(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    original_enqueue_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     # Relationships
     events: Mapped[list["TaskEvent"]] = relationship(

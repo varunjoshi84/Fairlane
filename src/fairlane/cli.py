@@ -628,5 +628,76 @@ def tenant_show(
         raise typer.Exit(code=1)
 
 
+@app.command("scheduler")
+def scheduler_cmd(
+    action: str = typer.Argument(..., help="Action to perform: 'rebuild'"),
+) -> None:
+    """Manage the Fairlane scheduler."""
+    import asyncio
+    
+    if action == "rebuild":
+        from fairlane.scheduler import rebuild_from_postgres
+        requeued = asyncio.run(rebuild_from_postgres())
+        typer.secho(f"Scheduler rebuilt successfully! {requeued} tasks re-added to waiting rooms.", fg=typer.colors.GREEN, bold=True)
+    else:
+        typer.secho(f"Unknown action '{action}'", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("queue")
+def queue_cmd() -> None:
+    """Show the current state of per-tenant waiting rooms (priority queues)."""
+    import asyncio
+    import time
+    from fairlane.redis_client import get_redis_client
+    
+    async def _run():
+        redis = get_redis_client()
+        now_ms = int(time.time() * 1000)
+        try:
+            tenants = await redis.zrange("tenants:vtime", 0, -1, withscores=True)
+            
+            typer.echo(f"{'TENANT':<15} {'WAITING':<10} {'OLDEST AGE':<15} {'VTIME':<10} {'WEIGHT':<8} {'INSTREAM':<10}")
+            typer.echo("─" * 72)
+            
+            if not tenants:
+                typer.echo("No tenants currently have waiting tasks.")
+                return
+                
+            for tenant_id_b, vtime in tenants:
+                tenant_id = tenant_id_b if isinstance(tenant_id_b, str) else tenant_id_b.decode('utf-8')
+                
+                # Waiting count
+                ready_key = f"ready:{tenant_id}"
+                waiting_count = await redis.zcard(ready_key)
+                
+                # Oldest age (smallest score)
+                oldest_task = await redis.zrange(ready_key, 0, 0, withscores=True)
+                oldest_age = "N/A"
+                if oldest_task:
+                    score = oldest_task[0][1]
+                    # Score is approx enqueue time + penalty. Without penalty it's hard to get exact,
+                    # but we can just do (now - score) as a rough estimate or just show the score relative
+                    age_ms = now_ms - score
+                    oldest_age = f"{age_ms/1000.0:.1f}s" if age_ms > 0 else "0s"
+                
+                # Weight
+                weight_key = f"tenant_weight:{tenant_id}"
+                weight = await redis.get(weight_key)
+                weight = weight if isinstance(weight, str) else (weight.decode('utf-8') if weight else "1")
+                
+                # Instream
+                instream_key = f"instream:{tenant_id}"
+                instream = await redis.get(instream_key)
+                instream = instream if isinstance(instream, str) else (instream.decode('utf-8') if instream else "0")
+                
+                typer.echo(f"{tenant_id:<15} {waiting_count:<10} {oldest_age:<15} {vtime:<10.2f} {weight:<8} {instream:<10}")
+                
+        finally:
+            await redis.aclose()
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()

@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: int = 3
     heartbeat_ttl_seconds: int = 10
 
+    # Scheduling Configuration
+    aging_ms_per_level: int = 5000
+    dispatch_batch_size: int = 50
+    stream_target_depth: int = 10
+    max_in_stream_per_tenant: int = 5
+    dispatcher_interval_ms: int = 100
+
     # Rate Limiting Defaults
     default_rate_per_second: float = 5.0
     default_burst: int = 10

@@ -231,7 +231,8 @@ async def _reclaim_tasks_from_dead_worker(
                 result = await db.execute(select(Task).where(Task.id == task_uuid))
                 task = result.scalar_one_or_none()
                 if task and task.status == TaskStatus.PENDING:
-                    await push_task_to_stream(task_id_str)
+                    from fairlane.scheduler import enqueue
+                    await enqueue(task, redis_client=redis)
                     logger.info(
                         f"Re-delivered task {task_id_str} to stream",
                         extra={"task_id": task_id_str},

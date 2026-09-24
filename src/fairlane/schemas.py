@@ -43,6 +43,7 @@ class TaskResponse(BaseModel):
     last_error: str | None = None
     locked_by: str | None = None
     locked_at: datetime | None = None
+    original_enqueue_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
