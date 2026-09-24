@@ -8,6 +8,8 @@ from fastapi.responses import RedirectResponse
 from fairlane.api.routes import router
 from fairlane.api.dlq_routes import dlq_router
 from fairlane.api.tenant_routes import tenant_router
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
 from fairlane.config import settings
 from fairlane.db import init_db
 from fairlane.logging_setup import setup_logging
@@ -46,6 +48,10 @@ async def root():
 app.include_router(router)
 app.include_router(dlq_router)
 app.include_router(tenant_router)
+
+@app.get("/metrics")
+async def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 if __name__ == "__main__":
     import uvicorn

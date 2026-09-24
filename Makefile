@@ -24,5 +24,11 @@ demo-crash:
 demo-fairness:
 	python scripts/demo_fairness.py
 
+demo-load:
+	python scripts/demo_load.py
+
+grafana:
+	@echo "Grafana Dashboard is available at: http://localhost:3000/d/fairlane-overview/fairlane-overview"
+
 demo-priority:
 	python scripts/demo_priority.py

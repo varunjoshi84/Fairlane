@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  - job_name: 'fairlane_api'
+    static_configs:
+      - targets: ['api:8000']
+
+  - job_name: 'fairlane_workers'
+    dns_sd_configs:
+      - names: ['worker']
+        type: 'A'
+        port: 9100

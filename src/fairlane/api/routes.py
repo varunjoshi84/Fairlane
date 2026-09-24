@@ -82,6 +82,10 @@ async def create_task(task_data: TaskCreate, db: AsyncSession = Depends(get_db))
         # 3. Push the task to the tenant's waiting room
         from fairlane.scheduler import enqueue
         await enqueue(new_task)
+        
+        # Metrics
+        from fairlane.metrics import inc_tasks_submitted
+        inc_tasks_submitted(new_task.tenant_id, new_task.priority)
 
         # 4. Return the task id
         return {"task_id": str(new_task.id)}

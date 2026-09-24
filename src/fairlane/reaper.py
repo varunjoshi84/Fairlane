@@ -61,6 +61,9 @@ async def _detect_and_mark_dead_workers(redis: Redis) -> list[str]:
 
         if dead_worker_ids:
             await db.commit()
+            
+            from fairlane.metrics import inc_workers_declared_dead
+            inc_workers_declared_dead(len(dead_worker_ids))
 
     return dead_worker_ids
 
@@ -191,6 +194,11 @@ async def _reclaim_tasks_from_dead_worker(
                         f"(attempt {task.attempts}/{task.max_attempts})",
                         extra={"task_id": task_id_str, "dead_worker_id": dead_worker_id},
                     )
+                    
+                    from fairlane.metrics import inc_tasks_completed, inc_dlq_total
+                    inc_tasks_completed(task.tenant_id, task.task_type, "dead")
+                    inc_dlq_total(task.tenant_id, FailureCategory.POISON_PILL.value)
+                    
                 else:
                     # --- Reclaim: set back to PENDING for re-delivery ---
                     task.status = TaskStatus.PENDING
@@ -292,6 +300,8 @@ async def run_reaper(redis: Redis, stop_event: asyncio.Event) -> None:
                         logger.info(
                             f"Reclaimed {reclaimed} task(s) from dead worker {dead_id}",
                         )
+                        from fairlane.metrics import inc_tasks_reclaimed
+                        inc_tasks_reclaimed(reclaimed)
 
         except asyncio.CancelledError:
             logger.info("Reaper cancelled")

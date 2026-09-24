@@ -184,6 +184,9 @@ async def _replay_task(
     from fairlane.scheduler import enqueue
     await enqueue(task)
 
+    from fairlane.metrics import inc_dlq_replays
+    inc_dlq_replays(task.tenant_id)
+
     logger.info(
         "Replayed task %s (replay_count=%d, payload_patch=%s)",
         task.id,

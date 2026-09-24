@@ -177,6 +177,28 @@ API / Replay / Retry
 
 ---
 
+## Observability
+
+Fairlane includes out-of-the-box observability powered by Prometheus and Grafana.
+
+- **Metrics Endpoints**: Available at `/metrics` on the API (port `8000`) and on Workers (default port `9100`).
+- **Dashboard**: A pre-configured Grafana dashboard provides real-time insights into throughput, queue depth, latency, error rates, and DLQ size.
+- **Alerts**: Prometheus is pre-configured with essential alert rules (e.g., worker down, growing DLQ).
+
+### Starting Observability
+When using `docker compose up`, Prometheus and Grafana are started automatically.
+
+- **Grafana**: [http://localhost:3000](http://localhost:3000) (anonymous viewing enabled)
+- **Prometheus**: [http://localhost:9090](http://localhost:9090)
+
+To generate demo traffic and view the dashboard in action:
+```bash
+make demo-load
+make grafana
+```
+
+---
+
 ## CLI Usage
 
 Fairlane comes with a Typer-based CLI:

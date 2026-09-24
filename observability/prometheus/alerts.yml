@@ -1,0 +1,29 @@
+groups:
+  - name: fairlane_alerts
+    rules:
+      - alert: WorkerDown
+        expr: fairlane_workers_active < 1
+        for: 10s
+        labels:
+          severity: critical
+        annotations:
+          summary: "No active Fairlane workers"
+          description: "There are no active workers polling tasks in the cluster."
+
+      - alert: DLQGrowing
+        expr: rate(fairlane_dlq_total[1m]) > 0
+        for: 10s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead Letter Queue is growing"
+          description: "Tasks are failing and being moved to the DLQ."
+
+      - alert: QueueBacklog
+        expr: fairlane_queue_oldest_age_seconds > 60
+        for: 10s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasks are backing up in the queue"
+          description: "The oldest waiting task has been waiting for more than 60 seconds."

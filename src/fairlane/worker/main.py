@@ -25,6 +25,18 @@ from fairlane.scheduler import enqueue, run_scheduler
 from fairlane.scheduler.dispatcher import run_dispatcher
 from fairlane.reaper import run_reaper
 from fairlane.ratelimit import RateLimiter
+from fairlane.metrics import (
+    inc_tasks_completed,
+    inc_task_retries,
+    inc_tasks_throttled,
+    inc_dlq_total,
+    observe_task_duration,
+    observe_task_wait,
+    observe_end_to_end,
+    set_worker_info,
+)
+from fairlane.metrics_collector import metrics_collection_loop
+from prometheus_client import start_http_server
 
 logger = logging.getLogger("fairlane.worker")
 
@@ -41,6 +53,7 @@ class FairlaneWorker:
         self.heartbeat_task: asyncio.Task | None = None
         self.reaper_task: asyncio.Task | None = None
         self.dispatcher_task: asyncio.Task | None = None
+        self.metrics_task: asyncio.Task | None = None
         self.current_task_id: uuid.UUID | None = None
 
     async def init_redis(self) -> None:
@@ -163,9 +176,17 @@ class FairlaneWorker:
                                 settings.redis_consumer_group,
                                 message_id,
                             )
+                        inc_tasks_throttled(task.tenant_id)
                         return
                 # 2. Mark Task as RUNNING in Postgres
                 now = datetime.now(UTC)
+                
+                # Observe wait time if original_enqueue_at is present, fallback to created_at
+                enqueue_time = task.original_enqueue_at or task.created_at
+                if enqueue_time:
+                    wait_duration = (now - enqueue_time.replace(tzinfo=UTC)).total_seconds()
+                    observe_task_wait(task.tenant_id, task.priority, max(0, wait_duration))
+                    
                 task.status = TaskStatus.RUNNING
                 task.started_at = now
                 task.next_retry_at = None
@@ -190,6 +211,8 @@ class FairlaneWorker:
                     f"Picked up task {task.id} (type: {task.task_type}, tenant: {task.tenant_id}, attempt: {task.attempts})",
                     extra={**log_context, "attempt": task.attempts},
                 )
+                
+                set_worker_info(self.worker_id, "RUNNING", task.task_type)
 
                 # --- Failure-injection hooks for testing ---
                 payload = task.payload or {}
@@ -289,6 +312,14 @@ class FairlaneWorker:
                     f"Task {task.id} finished SUCCEEDED",
                     extra=log_context,
                 )
+                
+                duration = (datetime.now(UTC) - task.started_at.replace(tzinfo=UTC)).total_seconds()
+                observe_task_duration(task.task_type, max(0, duration))
+                if task.created_at:
+                    e2e = (datetime.now(UTC) - task.created_at.replace(tzinfo=UTC)).total_seconds()
+                    observe_end_to_end(task.tenant_id, max(0, e2e))
+                    
+                inc_tasks_completed(task.tenant_id, task.task_type, "succeeded")
 
             except Exception as e:
                 await db.rollback()
@@ -357,6 +388,7 @@ class FairlaneWorker:
                                     "retryable": True,
                                 },
                             )
+                            inc_task_retries(failed_task.tenant_id, failed_task.task_type)
                         else:
                             # --- Terminal failure: move to DLQ ---
                             # For permanent errors, category is PERMANENT.
@@ -432,6 +464,10 @@ class FairlaneWorker:
                                     "retryable": retryable,
                                 },
                             )
+                            
+                            inc_tasks_completed(failed_task.tenant_id, failed_task.task_type, "dead")
+                            inc_dlq_total(failed_task.tenant_id, category.value)
+                            
                 except Exception as db_err:
                     logger.error(f"Failed to record failure/retry state in DB: {db_err}", extra=log_context)
 
@@ -450,6 +486,8 @@ class FairlaneWorker:
                 
                 if self.redis is not None and task is not None:
                     await self.redis.decr(f"instream:{task.tenant_id}")
+                    
+                set_worker_info(self.worker_id, "IDLE", "")
 
             self.current_task_id = None
 
@@ -523,6 +561,16 @@ class FairlaneWorker:
 
         # Launch dispatcher task (WFQ scheduling from waiting room to stream)
         self.dispatcher_task = asyncio.create_task(run_dispatcher(self.stop_event))
+        
+        # Launch metrics collector task
+        self.metrics_task = asyncio.create_task(metrics_collection_loop(settings.redis_url))
+        
+        # Start Prometheus metrics server
+        metrics_port = int(os.getenv("METRICS_PORT", "9100"))
+        start_http_server(metrics_port)
+        logger.info(f"Prometheus metrics server started on port {metrics_port}")
+        
+        set_worker_info(self.worker_id, "IDLE", "")
 
         logger.info(
             f"Worker '{self.worker_id}' listening on stream '{settings.redis_stream_name}'...",
@@ -600,6 +648,12 @@ class FairlaneWorker:
             self.dispatcher_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.dispatcher_task
+
+        # Stop the metrics task.
+        if self.metrics_task and not self.metrics_task.done():
+            self.metrics_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.metrics_task
 
         try:
             if self.redis:
