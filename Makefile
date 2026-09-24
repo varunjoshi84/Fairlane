@@ -10,13 +10,13 @@ logs:
 	docker compose logs -f
 
 migrate:
-	.venv/bin/alembic upgrade head
+	alembic upgrade head
 
 test:
-	.venv/bin/pytest -v
+	pytest -v
 
 lint:
-	.venv/bin/ruff check .
+	ruff check .
 
 demo-crash:
 	python scripts/demo_crash.py
