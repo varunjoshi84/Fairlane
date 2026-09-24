@@ -19,7 +19,7 @@ from sqlalchemy import select, update
 from fairlane.config import settings
 from fairlane.db import async_session_factory
 from fairlane.logging_setup import setup_logging
-from fairlane.models import DeadLetter, FailureCategory, Task, TaskEvent, TaskStatus, Worker, WorkerStatus
+from fairlane.models import DeadLetter, FailureCategory, SideEffect, Task, TaskEvent, TaskStatus, Worker, WorkerStatus
 from fairlane.retry import calculate_backoff, classify_failure, is_retryable
 from fairlane.scheduler import enqueue, run_scheduler
 from fairlane.scheduler.dispatcher import run_dispatcher
@@ -258,6 +258,15 @@ class FairlaneWorker:
                 else:
                     # Default short sleep to simulate work
                     await asyncio.sleep(0.5)
+
+                if task.task_type == "demo":
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+                    stmt = pg_insert(SideEffect).values(task_id=task.id)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["task_id"],
+                        set_={"count": SideEffect.count + 1},
+                    )
+                    await db.execute(stmt)
 
                 # 4. Mark Task as SUCCEEDED in Postgres — safe completion
                 #    Only update if this worker still owns the task (locked_by check)

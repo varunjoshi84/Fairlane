@@ -274,6 +274,42 @@ async def _reclaim_tasks_from_dead_worker(
     return reclaimed_count
 
 
+async def _reconcile_missing_tasks(redis: Redis) -> None:
+    """Re-enqueue PENDING tasks that are not in Redis.
+    
+    If Redis goes down during submit, tasks are saved as PENDING in Postgres
+    but fail to enqueue. This ensures they are eventually pushed.
+    """
+    from fairlane.scheduler import rebuild_from_postgres
+    # Rebuilding from Postgres safely re-enqueues PENDING tasks
+    # (ZADD is idempotent, and if it's already in the stream it's fine too)
+    # Actually, rebuild_from_postgres pushes ALL PENDING tasks.
+    # We could optimize it, but doing it every 5s is heavy. 
+    # Let's just find tasks older than 5s that are PENDING and haven't been picked up.
+    try:
+        async with async_session_factory() as db:
+            now = datetime.now(UTC)
+            # Find tasks PENDING for more than 10 seconds (gives them time to be processed normally)
+            stmt = select(Task).where(
+                Task.status == TaskStatus.PENDING,
+                Task.next_retry_at.is_(None)
+            )
+            result = await db.execute(stmt)
+            tasks = result.scalars().all()
+            
+            reconciled = 0
+            for task in tasks:
+                age = (now - (task.original_enqueue_at or task.created_at)).total_seconds()
+                if age > 10.0:
+                    from fairlane.scheduler import enqueue
+                    await enqueue(task, redis_client=redis)
+                    reconciled += 1
+            if reconciled > 0:
+                logger.info(f"Reconciled {reconciled} missing PENDING tasks to Redis")
+    except Exception as e:
+        logger.error(f"Failed to reconcile missing tasks: {e}")
+
+
 async def run_reaper(redis: Redis, stop_event: asyncio.Event) -> None:
     """Background loop that detects dead workers and reclaims their tasks.
 
@@ -302,6 +338,9 @@ async def run_reaper(redis: Redis, stop_event: asyncio.Event) -> None:
                         )
                         from fairlane.metrics import inc_tasks_reclaimed
                         inc_tasks_reclaimed(reclaimed)
+
+                # --- Phase 3: Reconcile missing tasks (Redis down during submit) ---
+                await _reconcile_missing_tasks(redis)
 
         except asyncio.CancelledError:
             logger.info("Reaper cancelled")

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fairlane
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: fairlane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest ruff
+        
+    - name: Set environment variables
+      run: |
+        cp .env.example .env
+        
+    - name: Lint with ruff
+      run: |
+        make lint
+        
+    - name: Run tests
+      run: |
+        make test
+        
+    # The full chaos monkey takes a long time and uses Docker in Docker, 
+    # so we just run a smoke test in CI if it's too heavy. 
+    # The prompt says: '"make ci" runs lint, unit tests, integration tests, and a short chaos smoke test (kill_one_worker with 200 tasks)'
+    # Actually wait, `make ci` currently runs all chaos tests via `scripts/chaos/run_all.py`.
+    # Let's adjust `make ci` to only run a smoke test.

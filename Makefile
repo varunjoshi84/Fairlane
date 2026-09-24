@@ -1,4 +1,4 @@
-.PHONY: up down logs migrate test lint demo-crash
+.PHONY: up down logs migrate test lint demo-crash demo-fairness demo-priority report demo-all ci
 
 up:
 	docker compose up -d
@@ -10,13 +10,13 @@ logs:
 	docker compose logs -f
 
 migrate:
-	alembic upgrade head
+	.venv/bin/alembic upgrade head
 
 test:
-	pytest -v
+	.venv/bin/pytest -v
 
 lint:
-	ruff check .
+	.venv/bin/ruff check .
 
 demo-crash:
 	python scripts/demo_crash.py
@@ -32,3 +32,12 @@ grafana:
 
 demo-priority:
 	python scripts/demo_priority.py
+
+report:
+	python scripts/report.py
+
+demo-all:
+	python scripts/demo_all.py
+
+ci: lint test
+	python scripts/chaos/run_all.py

@@ -1,6 +1,11 @@
-# Fairlane
+# Fairlane v1.0.0
 
 Fairlane is a lightweight, distributed task queue engine built with **Python 3.11+**, **FastAPI**, **PostgreSQL 16**, **Redis 7 (Streams)**, and **SQLAlchemy 2.0 (asyncio)**.
+
+- **[Architecture & Guarantees](docs/ARCHITECTURE.md)**
+- **[Evaluation Results](docs/RESULTS.md)**
+- **[Design Decisions](docs/DESIGN_DECISIONS.md)**
+- **[Interactive Demo](docs/DEMO_SCRIPT.md)**
 
 ---
 
@@ -145,30 +150,12 @@ curl http://localhost:8000/tasks/65631ce2-f26d-4f5d-900c-e8a875a6dacb
 
 Fairlane implements advanced task scheduling using Weighted Fair Queuing (WFQ) and priority aging to ensure fairness across multiple tenants while respecting task priorities.
 
-```text
-API / Replay / Retry
-        │
-        ▼
-┌─────────────────────────────────┐
-│     Waiting Rooms (Redis ZSETs) │
-│     (Per-Tenant priority queues)│
-└─────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────┐
-│     Lua Dispatcher (WFQ)        │
-│     (Applies weights & aging)   │
-└─────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────┐
-│     Redis Stream (Shallow)      │
-└─────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────┐
-│     Workers (Execution)         │
-└─────────────────────────────────┘
+```mermaid
+graph TD
+    API(API / Replay / Retry) --> WR[(Waiting Rooms<br>Redis ZSETs)]
+    WR -->|Per-Tenant priority queues| D[Lua Dispatcher<br>WFQ & Aging]
+    D --> S[(Redis Stream<br>Shallow)]
+    S --> W(Workers<br>Execution)
 ```
 
 - **Priority Aging**: Lower priority tasks gradually gain priority over time to prevent starvation.

@@ -81,7 +81,10 @@ async def create_task(task_data: TaskCreate, db: AsyncSession = Depends(get_db))
 
         # 3. Push the task to the tenant's waiting room
         from fairlane.scheduler import enqueue
-        await enqueue(new_task)
+        try:
+            await enqueue(new_task)
+        except Exception as redis_err:
+            logger.warning(f"Failed to enqueue task {new_task.id} to Redis (will be reconciled): {redis_err}")
         
         # Metrics
         from fairlane.metrics import inc_tasks_submitted
@@ -89,6 +92,8 @@ async def create_task(task_data: TaskCreate, db: AsyncSession = Depends(get_db))
 
         # 4. Return the task id
         return {"task_id": str(new_task.id)}
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
         logger.error(f"Error creating task: {e}")
